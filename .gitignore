@@ -11,6 +11,7 @@ __pycache__/
 # OS/runtime temp files
 temp/
 *.log
+gcm-diagnose.log
 
 # Downloaded/generated media and sample outputs
 downloads/
