@@ -1,0 +1,40 @@
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local editor/tooling
+.vscode/
+.trae/
+
+# OS/runtime temp files
+temp/
+*.log
+
+# Downloaded/generated media and sample outputs
+downloads/
+test_downloads/
+new_Reptilia/downloads/
+new_Reptilia/test_downloads/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.zip
+
+# Local secrets and user-generated runtime data
+input_history.txt
+*.cookies.json
+raw_cookies.json
+test_cookies.json
+advanced_cookies.json
+cURL*.txt
+debug_page.html
+test_page.html
