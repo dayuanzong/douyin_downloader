@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 from pathlib import Path
 import shutil
 from douyin_downloader.downloader.downloader import Downloader
@@ -57,7 +58,7 @@ class PostFetcherTest(unittest.TestCase):
 
         first_item = aweme_list[0]
         print("视频数据详情:", first_item.get('video'))
-        self.downloader._download_item(first_item)
+        asyncio.run(self.downloader._download_item(first_item))
 
         video_id = first_item['aweme_id']
         desc = first_item.get('desc', 'no_desc')

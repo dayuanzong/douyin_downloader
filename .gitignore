@@ -12,6 +12,8 @@ __pycache__/
 temp/
 *.log
 gcm-diagnose.log
+log.txt
+gui_state.json
 
 # Downloaded/generated media and sample outputs
 downloads/
