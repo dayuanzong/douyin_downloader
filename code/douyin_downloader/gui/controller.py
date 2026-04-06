@@ -10,6 +10,7 @@ from douyin_downloader.gui.persistence import FileLogger, PreferencesStore
 from douyin_downloader.gui.state import GUIState
 from douyin_downloader.gui.views import MainWindowView
 from douyin_downloader.models import DownloadCallbacks, DownloadRequest
+from douyin_downloader.paths import GUI_STATE_FILE, INPUT_HISTORY_FILE, LOG_FILE, ensure_runtime_dir
 from douyin_downloader.services.browser_auth_service import BrowserAuthService, BrowserCookieImportResult
 from douyin_downloader.services.download_service import DownloadService
 
@@ -20,9 +21,10 @@ class MainWindowController:
         self.state = state
         self.view = view
         self.service = service
-        self.input_log_file = Path("input_history.txt")
-        self.preferences_store = PreferencesStore(Path("gui_state.json"))
-        self.file_logger = FileLogger(Path("log.txt"))
+        ensure_runtime_dir()
+        self.input_log_file = INPUT_HISTORY_FILE
+        self.preferences_store = PreferencesStore(GUI_STATE_FILE)
+        self.file_logger = FileLogger(LOG_FILE)
         self.download_thread = None
         self.browser_import_thread = None
         self.download_queue: list[dict] = []

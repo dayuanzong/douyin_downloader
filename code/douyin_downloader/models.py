@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from douyin_downloader.paths import DOWNLOADS_DIR
+
 
 @dataclass(slots=True)
 class DownloadRequest:
     url: str = ""
-    save_dir: Path = Path("downloads")
+    save_dir: Path = DOWNLOADS_DIR
     curl_text: str = ""
     curl_file: Path | None = None
 

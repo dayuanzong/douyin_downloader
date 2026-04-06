@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from douyin_downloader.models import DownloadRequest
+from douyin_downloader.paths import DOWNLOADS_DIR
 from douyin_downloader.services.download_service import DownloadService
 
 
@@ -21,7 +22,7 @@ def _prompt_for_text(label: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="下载抖音作者主页内容或单个作品。")
     parser.add_argument("url", nargs="?", type=str, help="作者主页、单作品或分享短链 URL。")
-    parser.add_argument("--save-dir", type=str, default="downloads", help="媒体保存目录。")
+    parser.add_argument("--save-dir", type=str, default=str(DOWNLOADS_DIR), help="媒体保存目录。")
     parser.add_argument("--curl-file", type=str, help="包含 cURL 命令的文本文件。")
     parser.add_argument("--curl-text", type=str, help="直接传入 cURL 文本。")
     args = parser.parse_args()

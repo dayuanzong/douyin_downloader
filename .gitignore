@@ -8,18 +8,24 @@ __pycache__/
 .vscode/
 .trae/
 
-# OS/runtime temp files
-temp/
-*.log
-gcm-diagnose.log
-log.txt
-gui_state.json
-
-# Downloaded/generated media and sample outputs
+# Runtime/output directories
 downloads/
+code/runtime/
+code/__pycache__/
+code/tests/__pycache__/
+code/douyin_downloader/__pycache__/
+code/douyin_downloader/*/__pycache__/
+code/legacy_new_Reptilia/__pycache__/
+code/legacy_artifacts/
+
+# Local temp artifacts
+temp/
+samples/
 test_downloads/
-new_Reptilia/downloads/
-new_Reptilia/test_downloads/
+gcm-diagnose.log
+test_page.html
+
+# Media and generated reports
 *.mp4
 *.mov
 *.avi
@@ -32,12 +38,12 @@ new_Reptilia/test_downloads/
 *.bmp
 *.zip
 
-# Local secrets and user-generated runtime data
-input_history.txt
+# Local secrets and user-generated files
 *.cookies.json
 raw_cookies.json
 test_cookies.json
 advanced_cookies.json
-cURL*.txt
-debug_page.html
-test_page.html
+code/cURL.txt
+code/legacy_new_Reptilia/cURL.txt
+code/legacy_new_Reptilia/cURL_new.txt
+code/legacy_new_Reptilia/debug_page.html
