@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from douyin_downloader.paths import CODE_DIR, COOKIE_GUIDE_FILE, CURL_TEMPLATE_FILE, DOWNLOADS_DIR, RUNTIME_DIR
 
 
@@ -25,8 +23,8 @@ def check_paths() -> None:
 def main() -> None:
     check_paths()
     print("\n建议启动命令:")
-    print("python code/gui_app.py")
-    print("python code/main.py <分享链接>")
+    print("python gui_app.py")
+    print("python main.py <分享链接>")
 
 
 if __name__ == "__main__":

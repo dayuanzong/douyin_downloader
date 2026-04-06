@@ -1,0 +1,69 @@
+Git 代理说明
+
+问题现象
+只把 git.exe 加入代理白名单后，SSH 可以正常使用，但 HTTPS 访问 GitHub 仍可能失败，常见报错包括：
+- schannel: failed to receive handshake, SSL/TLS connection failed
+- 无法访问 https://github.com/... 
+
+根本原因
+Git for Windows 并不是只靠 git.exe 自己完成所有网络通信。
+当执行不同协议的远程操作时，git.exe 会调用其他子程序完成实际连接、认证和传输。
+如果代理软件只识别 git.exe，而没有放行这些子程序，就会出现：
+- git.exe 本体已走代理
+- 但真正发起 HTTPS/认证请求的子程序没有走代理
+- 最终表现为 HTTPS 失败、SSH 正常，或反过来
+
+本机实际涉及到的程序
+1. Git 主程序
+D:\Program Files\Git\cmd\git.exe
+
+2. HTTPS 远程传输程序
+D:\Program Files\Git\mingw64\libexec\git-core\git-remote-https.exe
+
+3. HTTP 远程传输程序
+D:\Program Files\Git\mingw64\libexec\git-core\git-remote-http.exe
+
+4. Git 凭据管理程序
+D:\Program Files\Git\mingw64\bin\git-credential-manager.exe
+
+5. SSH 程序
+C:\Windows\System32\OpenSSH\ssh.exe
+
+为什么会这样
+1. 当执行 git push / git fetch / git ls-remote 等命令时，git.exe 通常只是入口。
+2. 如果远程地址是 HTTPS，真正负责网络传输的往往是 git-remote-https.exe。
+3. 如果需要凭据读取、登录或令牌处理，还可能调用 git-credential-manager.exe。
+4. 如果远程地址是 SSH，则通常由 ssh.exe 实际发起连接。
+5. 因此代理软件如果只对白名单中的 git.exe 生效，而不跟踪其子进程，就会导致协议链路不完整。
+
+为什么会出现“SSH 正常但 HTTPS 不通”
+这通常说明：
+- ssh.exe 已经被代理或放行
+- 但 git-remote-https.exe 没有被代理
+
+为什么会出现“HTTPS 正常但 SSH 不通”
+这通常说明：
+- git-remote-https.exe 已经被代理
+- 但 ssh.exe 没有被代理，或者 22 端口被网络拦截
+
+给代理软件的建议
+代理软件不应只识别 git.exe 单一进程，而应支持以下任一策略：
+
+方案 A
+按进程白名单同时放行：
+- git.exe
+- git-remote-https.exe
+- git-remote-http.exe
+- git-credential-manager.exe
+- ssh.exe
+
+方案 B
+支持“父进程 git.exe 的子进程自动继承代理规则”
+
+方案 C
+对整个 Git 安装目录的相关网络子程序统一做代理策略
+
+额外说明
+Git for Windows 在 HTTPS 场景下通常还会调用 Windows 的 TLS 栈（schannel）。
+因此如果代理软件包含 HTTPS 拦截、证书重签发或 TLS 中间层，还需要保证对应证书链在系统中被正确识别。
+但如果现象是“只代理 git.exe 不生效”，优先怀疑子进程未被代理，而不是先怀疑 Git 本体。

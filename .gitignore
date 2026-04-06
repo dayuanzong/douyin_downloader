@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+douyin_downloader/__pycache__/
+douyin_downloader/*/__pycache__/
+tests/__pycache__/
+runtime/__pycache__/
 
 # Local editor/tooling
 .vscode/
@@ -10,13 +14,7 @@ __pycache__/
 
 # Runtime/output directories
 downloads/
-code/runtime/
-code/__pycache__/
-code/tests/__pycache__/
-code/douyin_downloader/__pycache__/
-code/douyin_downloader/*/__pycache__/
-code/legacy_new_Reptilia/__pycache__/
-code/legacy_artifacts/
+runtime/
 
 # Local temp artifacts
 temp/
@@ -43,7 +41,4 @@ test_page.html
 raw_cookies.json
 test_cookies.json
 advanced_cookies.json
-code/cURL.txt
-code/legacy_new_Reptilia/cURL.txt
-code/legacy_new_Reptilia/cURL_new.txt
-code/legacy_new_Reptilia/debug_page.html
+cURL.txt

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from douyin_downloader.paths import CURL_TEMPLATE_FILE
 
@@ -17,7 +16,7 @@ def main() -> None:
     curl_file_path = CURL_TEMPLATE_FILE
     print(f"读取文件: {curl_file_path}")
     if not curl_file_path.exists():
-        print("未找到 cURL.txt，请先在 code/cURL.txt 中粘贴真实 cURL。")
+        print("未找到 cURL.txt，请先在项目根目录的 cURL.txt 中粘贴真实 cURL。")
         return
 
     curl_content = curl_file_path.read_text(encoding="utf-8").strip()
