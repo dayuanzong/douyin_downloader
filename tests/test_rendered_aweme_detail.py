@@ -1,6 +1,7 @@
 import json
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from douyin_downloader.api.client import DouyinAPIClient
 from douyin_downloader.cookies.manager import CookieManager
@@ -24,6 +25,23 @@ class RenderedAwemeDetailTest(unittest.TestCase):
             ["$", "$L9", None, {"awemeId": raw_detail["awemeId"], "aweme": {"statusCode": 0, "detail": raw_detail}}],
             ensure_ascii=False,
         )
+        escaped_payload = payload.replace("\\", "\\\\").replace('"', '\\"')
+        html = f'<script nonce="" crossorigin="anonymous">self.__pace_f.push([1,"{escaped_payload}"])</script>'
+
+        detail = DouyinAPIClient._extract_aweme_detail_from_page_content(html, raw_detail["awemeId"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["awemeId"], raw_detail["awemeId"])
+        self.assertEqual(detail["desc"], raw_detail["desc"])
+
+    def test_extract_aweme_detail_from_urlencoded_render_payload(self):
+        raw_detail = {
+            "awemeId": "7626464319467323849",
+            "awemeType": 0,
+            "desc": "#test video",
+            "authorInfo": {"uid": "42", "secUid": "sec_42", "nickname": "tester"},
+            "video": {"playAddr": [{"src": "https://example.com/video.mp4"}]},
+        }
+        payload = quote(json.dumps({"app": {"videoDetail": raw_detail}}, ensure_ascii=False), safe="")
         escaped_payload = payload.replace("\\", "\\\\").replace('"', '\\"')
         html = f'<script nonce="" crossorigin="anonymous">self.__pace_f.push([1,"{escaped_payload}"])</script>'
 

@@ -64,6 +64,35 @@ class BrowserAuthServiceTest(unittest.TestCase):
         self.assertTrue(BrowserAuthService._looks_authenticated("ttwid=abc; sessionid=123"))
         self.assertFalse(BrowserAuthService._looks_authenticated("passport_csrf_token=123"))
 
+    def test_import_cookie_text_prefers_provided_authentication_text_over_cached_cookie(self):
+        class StubBrowserAuthService(BrowserAuthService):
+            def __init__(self):
+                super().__init__(
+                    browser_candidates=(
+                        BrowserCandidate("Edge", Path(r"C:\stub\msedge.exe"), Path(r"C:\stub\User Data")),
+                    )
+                )
+                self.seeded_cookie_text = None
+
+            def resolve_browser(self):
+                return self.browser_candidates[0]
+
+            def _import_from_managed_profile(self, browser, *, target_url, log_callback=None):
+                return None
+
+            def _import_from_cached_cookie_store(self, browser, log_callback=None):
+                return self._result_from_cookie_text(browser, "sessionid=old; ttwid=old", source="local auth cache")
+
+            def _seed_managed_profile_from_cookie_text(self, browser, cookie_text: str, *, target_url: str, log_callback=None):
+                self.seeded_cookie_text = cookie_text
+
+        service = StubBrowserAuthService()
+        result = service.import_cookie_text(bootstrap_cookie_text="sessionid=new; ttwid=new")
+
+        self.assertEqual(service.seeded_cookie_text, "sessionid=new; ttwid=new")
+        self.assertEqual(result.cookie_text, "sessionid=new; ttwid=new")
+        self.assertEqual(result.source, "provided authentication text")
+
 
 if __name__ == "__main__":
     unittest.main()

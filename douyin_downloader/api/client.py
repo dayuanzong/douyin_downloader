@@ -4,6 +4,7 @@ import json
 import re
 import time
 from pathlib import Path
+from urllib.parse import unquote
 from urllib.parse import urlencode
 from urllib.parse import urlparse
 
@@ -58,6 +59,43 @@ class DouyinAPIClient:
             "Cookie": self.cookie_manager.get_cookie()
             or "ttwid=1%7CZ6MKbdL_Kj8xKRwSvvjvUiDb5-FNznsFV5MiBzYOCUU%7C1762648371%7C1de9cecc994a65aa7a1158b5ae70072bf553beb847b95660f043d78093974a62",
         }
+
+    def _build_context_cookies(self) -> list[dict]:
+        cookie_text = self.cookie_manager.get_cookie() or ""
+        cookies: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for segment in cookie_text.split(";"):
+            if "=" not in segment:
+                continue
+            name, value = segment.split("=", 1)
+            clean_name = name.strip()
+            clean_value = value.strip()
+            if not clean_name or not clean_value:
+                continue
+            for domain in (".douyin.com", ".iesdouyin.com"):
+                key = (clean_name, domain)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cookies.append(
+                    {
+                        "name": clean_name,
+                        "value": clean_value,
+                        "domain": domain,
+                        "path": "/",
+                        "secure": True,
+                    }
+                )
+        return cookies
+
+    def _add_auth_cookies_to_context(self, context) -> None:
+        cookies = self._build_context_cookies()
+        if not cookies:
+            return
+        try:
+            context.add_cookies(cookies)
+        except PlaywrightError:
+            return
 
     def resolve_url(self, url: str) -> str:
         if not url.strip():
@@ -175,6 +213,7 @@ class DouyinAPIClient:
     def _detail_getters(self, page_url: str | None):
         if isinstance(page_url, str) and ("/note/" in page_url or "/video/" in page_url):
             return (
+                self._get_page_aweme_detail,
                 self._get_rendered_aweme_detail,
                 self._get_web_aweme_detail,
                 self._get_iteminfo_aweme_detail,
@@ -182,6 +221,7 @@ class DouyinAPIClient:
         return (
             self._get_web_aweme_detail,
             self._get_iteminfo_aweme_detail,
+            self._get_page_aweme_detail,
             self._get_rendered_aweme_detail,
         )
 
@@ -264,6 +304,7 @@ class DouyinAPIClient:
                         user_agent=self._get_headers()["user-agent"],
                         locale="zh-CN",
                     )
+                    self._add_auth_cookies_to_context(context)
                     for work_url in self._candidate_work_urls(aweme_id, page_url):
                         page = context.new_page()
                         navigation_timeout = 10000 if "/video/" in work_url else 6000
@@ -305,6 +346,34 @@ class DouyinAPIClient:
 
         if last_playwright_error is not None:
             self._set_error(f"网络超时，作品页面加载失败，请稍后重试: {last_playwright_error}", kind="network")
+        return None
+
+    def _get_page_aweme_detail(self, aweme_id: str, *, page_url: str | None = None) -> dict | None:
+        last_error_message = None
+        for work_url in self._candidate_work_urls(aweme_id, page_url):
+            response = None
+            try:
+                headers = self._get_headers()
+                headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                headers["referer"] = work_url
+                response = self.session.get(work_url, headers=headers, timeout=8)
+                response.raise_for_status()
+                detail = self._extract_aweme_detail_from_page_content(response.text, aweme_id)
+                if detail:
+                    self._clear_error()
+                    return self._normalize_rendered_aweme_detail(detail)
+            except requests.Timeout as exc:
+                last_error_message = f"网络超时，作品页面加载失败，请稍后重试: {exc}"
+                self._set_error(last_error_message, kind="network")
+            except requests.RequestException as exc:
+                last_error_message = f"网络错误，请检查网络后重试: {exc}"
+                self._set_error(last_error_message, kind="network")
+            finally:
+                if response is not None:
+                    response.close()
+        if last_error_message:
+            return None
+        self._set_error(f"未能从作品页面提取详情: {aweme_id}", kind="api")
         return None
 
     @staticmethod
@@ -396,21 +465,27 @@ class DouyinAPIClient:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(**launch_kwargs)
                 try:
-                    page = browser.new_page(user_agent=self._get_headers()["user-agent"])
+                    context = browser.new_context(user_agent=self._get_headers()["user-agent"], locale="zh-CN")
+                    self._add_auth_cookies_to_context(context)
+                    page = context.new_page()
                     try:
-                        page.goto(url, wait_until="commit", timeout=5000)
-                    except PlaywrightError:
-                        page.goto(url, timeout=5000)
+                        try:
+                            page.goto(url, wait_until="commit", timeout=5000)
+                        except PlaywrightError:
+                            page.goto(url, timeout=5000)
 
-                    initial_url = url.strip().rstrip("/")
-                    for _ in range(8):
-                        page.wait_for_timeout(250)
+                        initial_url = url.strip().rstrip("/")
+                        for _ in range(8):
+                            page.wait_for_timeout(250)
+                            current_url = page.url.strip()
+                            if current_url and current_url.rstrip("/") != initial_url:
+                                return current_url
                         current_url = page.url.strip()
                         if current_url and current_url.rstrip("/") != initial_url:
                             return current_url
-                    current_url = page.url.strip()
-                    if current_url and current_url.rstrip("/") != initial_url:
-                        return current_url
+                    finally:
+                        page.close()
+                        context.close()
                 finally:
                     browser.close()
         except Exception as exc:
@@ -474,16 +549,8 @@ class DouyinAPIClient:
     def _extract_aweme_detail_from_page_content(page_content: str, aweme_id: str) -> dict | None:
         for match in PACE_F_SCRIPT_PATTERN.finditer(page_content):
             payload = match.group(1)
-            try:
-                decoded = json.loads(f'"{payload}"')
-            except json.JSONDecodeError:
-                continue
-            if aweme_id not in decoded:
-                continue
-            try:
-                _, body = decoded.split(":", 1)
-                fragment = json.loads(body)
-            except (ValueError, json.JSONDecodeError):
+            fragment = DouyinAPIClient._decode_render_payload(payload, aweme_id)
+            if fragment is None:
                 continue
             detail = DouyinAPIClient._find_rendered_aweme_detail(fragment, aweme_id)
             if detail:
@@ -491,8 +558,45 @@ class DouyinAPIClient:
         return None
 
     @staticmethod
+    def _decode_render_payload(payload: str, aweme_id: str):
+        try:
+            decoded = json.loads(f'"{payload}"')
+        except json.JSONDecodeError:
+            return None
+        if aweme_id not in decoded:
+            return None
+
+        candidates = [decoded]
+        unquoted = unquote(decoded)
+        if unquoted != decoded:
+            candidates.append(unquoted)
+
+        for candidate in candidates:
+            stripped = candidate.strip()
+            if not stripped:
+                continue
+            try:
+                if stripped.startswith("{") or stripped.startswith("["):
+                    return json.loads(stripped)
+                if ":" in stripped:
+                    _, body = stripped.split(":", 1)
+                    body = body.strip()
+                    if body.startswith("{") or body.startswith("["):
+                        return json.loads(body)
+            except (ValueError, json.JSONDecodeError):
+                continue
+        return None
+
+    @staticmethod
     def _find_rendered_aweme_detail(node, aweme_id: str) -> dict | None:
         if isinstance(node, dict):
+            for key in ("videoDetail", "noteDetail"):
+                candidate = node.get(key)
+                if isinstance(candidate, dict):
+                    candidate_aweme_id = str(candidate.get("awemeId") or candidate.get("aweme_id") or "")
+                    if candidate_aweme_id == aweme_id:
+                        return candidate
+
             aweme_block = node.get("aweme")
             current_aweme_id = str(node.get("awemeId") or node.get("aweme_id") or "")
             if current_aweme_id == aweme_id and isinstance(aweme_block, dict):

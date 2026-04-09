@@ -113,14 +113,6 @@ class BrowserAuthService:
     ) -> BrowserCookieImportResult:
         browser = self.resolve_browser()
 
-        managed_result = self._import_from_managed_profile(browser, target_url=target_url, log_callback=log_callback)
-        if managed_result:
-            return managed_result
-
-        cached_result = self._import_from_cached_cookie_store(browser, log_callback=log_callback)
-        if cached_result:
-            return cached_result
-
         bootstrap_cookie_text = (bootstrap_cookie_text or "").strip()
         if bootstrap_cookie_text:
             normalized_cookie_text = self._normalize_cookie_text_input(bootstrap_cookie_text)
@@ -138,7 +130,15 @@ class BrowserAuthService:
                         return managed_result
                 except Exception as exc:
                     self._emit_log(log_callback, f"Managed browser bootstrap skipped: {exc}")
-                return self._result_from_cookie_text(browser, normalized_cookie_text, source="cached authentication text")
+                return self._result_from_cookie_text(browser, normalized_cookie_text, source="provided authentication text")
+
+        managed_result = self._import_from_managed_profile(browser, target_url=target_url, log_callback=log_callback)
+        if managed_result:
+            return managed_result
+
+        cached_result = self._import_from_cached_cookie_store(browser, log_callback=log_callback)
+        if cached_result:
+            return cached_result
 
         installed_result = self._import_from_installed_browser(browser, log_callback=log_callback)
         if installed_result:
