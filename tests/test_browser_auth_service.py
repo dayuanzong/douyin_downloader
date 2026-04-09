@@ -6,10 +6,10 @@ from douyin_downloader.services.browser_auth_service import BrowserAuthService, 
 
 
 class BrowserAuthServiceTest(unittest.TestCase):
-    def test_build_cookie_text_only_keeps_douyin_cookie_pairs(self):
+    def test_build_cookie_text_only_keeps_target_cookie_pairs(self):
         cookies = [
             {"name": "ttwid", "value": "abc", "domain": ".douyin.com"},
-            {"name": "msToken", "value": "xyz", "domain": "www.douyin.com"},
+            {"name": "msToken", "value": "xyz", "domain": "www.iesdouyin.com"},
             {"name": "sid", "value": "ignore", "domain": ".example.com"},
             {"name": "ttwid", "value": "duplicate", "domain": ".douyin.com"},
         ]
@@ -28,8 +28,6 @@ class BrowserAuthServiceTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             preferred = Path(temp_dir) / "msedge.exe"
             preferred.touch()
-            user_data_dir = Path(temp_dir) / "EdgeUserData"
-            user_data_dir.mkdir()
             service = BrowserAuthService(
                 preferred_executable=preferred,
                 browser_candidates=(
@@ -48,6 +46,23 @@ class BrowserAuthServiceTest(unittest.TestCase):
             (base / "Profile 1").mkdir()
             profiles = BrowserAuthService._iter_browser_profiles(base)
             self.assertEqual([profile.name for profile in profiles], ["Default", "Profile 1", "Profile 2"])
+
+    def test_cookie_text_to_context_cookies_duplicates_domains(self):
+        cookies = BrowserAuthService._cookie_text_to_context_cookies("sessionid=abc; ttwid=xyz")
+        pairs = {(item["name"], item["domain"]) for item in cookies}
+        self.assertEqual(
+            pairs,
+            {
+                ("sessionid", ".douyin.com"),
+                ("sessionid", ".iesdouyin.com"),
+                ("ttwid", ".douyin.com"),
+                ("ttwid", ".iesdouyin.com"),
+            },
+        )
+
+    def test_looks_authenticated_requires_login_cookie(self):
+        self.assertTrue(BrowserAuthService._looks_authenticated("ttwid=abc; sessionid=123"))
+        self.assertFalse(BrowserAuthService._looks_authenticated("passport_csrf_token=123"))
 
 
 if __name__ == "__main__":

@@ -12,13 +12,17 @@ from douyin_downloader.cookies.parser import (
 )
 from douyin_downloader.downloader.downloader import Downloader
 from douyin_downloader.models import DownloadCallbacks, DownloadRequest, DownloadTarget
+from douyin_downloader.services.browser_auth_service import BrowserAuthService
 from douyin_downloader.utils.aweme_extractor import extract_aweme_id, extract_share_url
 from douyin_downloader.utils.sec_user_id_extractor import extract_sec_user_id
 
 
 class DownloadService:
-    def __init__(self, gui_downloader_factory=None):
+    def __init__(self, gui_downloader_factory=None, browser_auth_service: BrowserAuthService | None = None):
         self.gui_downloader_factory = gui_downloader_factory
+        self.browser_auth_service = browser_auth_service or BrowserAuthService(
+            preferred_executable=Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+        )
 
     def resolve_target(self, request: DownloadRequest, api_client: DouyinAPIClient | None = None) -> DownloadTarget:
         url = extract_share_url(request.url.strip())
@@ -55,14 +59,14 @@ class DownloadService:
 
         curl_text = self._resolve_curl_text(request)
         if not curl_text:
-            raise ValueError("无法从当前输入中识别作者主页或作品链接，请检查 URL / cURL / Cookie 内容。")
+            raise ValueError("Unable to resolve the target from the current URL or authentication text.")
 
         sec_user_id = extract_sec_user_id_from_curl(curl_text)
         author_url = extract_author_url_from_curl(curl_text)
         if not sec_user_id and author_url:
             sec_user_id = extract_sec_user_id(author_url)
         if not sec_user_id:
-            raise ValueError("无法从当前输入中提取 sec_user_id，请检查 URL / cURL / Cookie 内容。")
+            raise ValueError("Unable to extract sec_user_id from the current URL or authentication text.")
 
         return DownloadTarget(
             kind="user",
@@ -73,10 +77,10 @@ class DownloadService:
 
     def run_cli_download(self, request: DownloadRequest, log_callback=None) -> None:
         save_dir = self._ensure_save_dir(request.save_dir)
-        cookie_manager = self._build_cookie_manager(request)
+        cookie_manager = self._build_cookie_manager(request, log_callback=log_callback)
         api_client = DouyinAPIClient(
             cookie_manager,
-            error_callback=lambda error: self._emit_log(log_callback, f"API错误: {error}"),
+            error_callback=lambda error: self._emit_log(log_callback, f"API error: {error}"),
         )
         downloader = Downloader(api_client, save_dir)
         target = self.resolve_target(request, api_client=api_client)
@@ -91,10 +95,10 @@ class DownloadService:
             self.gui_downloader_factory = GUIDownloader
 
         save_dir = self._ensure_save_dir(request.save_dir)
-        cookie_manager = self._build_cookie_manager(request)
+        cookie_manager = self._build_cookie_manager(request, log_callback=callbacks.log_callback)
         api_client = DouyinAPIClient(
             cookie_manager,
-            error_callback=lambda error: self._emit_log(callbacks.log_callback, f"API错误: {error}"),
+            error_callback=lambda error: self._emit_log(callbacks.log_callback, f"API error: {error}"),
         )
         downloader = self.gui_downloader_factory(
             api_client=api_client,
@@ -106,7 +110,7 @@ class DownloadService:
         )
         target = self.resolve_target(request, api_client=api_client)
 
-        self._emit_log(callbacks.log_callback, "下载任务开始执行...")
+        self._emit_log(callbacks.log_callback, "Download task started.")
         self._emit_target_logs(request, target, save_dir, callbacks.log_callback)
         self._run_download_target(api_client, downloader, target, callbacks=callbacks)
 
@@ -125,16 +129,16 @@ class DownloadService:
             if target.kind == "aweme":
                 aweme_detail = api_client.get_aweme_detail(target.identifier, page_url=target.resolved_url or target.source_url)
                 if not aweme_detail:
-                    raise RuntimeError(api_client.last_error or f"未能获取作品 {target.identifier} 的详情信息")
+                    raise RuntimeError(api_client.last_error or f"Unable to load aweme detail: {target.identifier}")
                 self._emit_log(
                     callbacks.log_callback if callbacks else log_callback,
-                    f"识别为单作品下载，作品ID: {target.identifier}",
+                    f"Detected single-aweme download: {target.identifier}",
                 )
                 loop.run_until_complete(downloader.download_aweme(aweme_detail))
             else:
                 self._emit_log(
                     callbacks.log_callback if callbacks else log_callback,
-                    f"识别为作者主页下载，sec_user_id: {target.identifier}",
+                    f"Detected author download: {target.identifier}",
                 )
                 loop.run_until_complete(downloader.download_user_posts(target.identifier))
 
@@ -144,17 +148,17 @@ class DownloadService:
             loop.close()
 
     def _emit_target_logs(self, request: DownloadRequest, target: DownloadTarget, save_dir: Path, log_callback) -> None:
-        self._emit_log(log_callback, f"保存目录: {save_dir}")
+        self._emit_log(log_callback, f"Save directory: {save_dir}")
         if request.url.strip():
-            self._emit_log(log_callback, f"输入内容: {request.url.strip()}")
+            self._emit_log(log_callback, f"Input: {request.url.strip()}")
         if request.curl_file:
-            self._emit_log(log_callback, f"已导入 cURL 文件: {request.curl_file}")
+            self._emit_log(log_callback, f"Using cURL file: {request.curl_file}")
         if request.curl_text.strip():
-            self._emit_log(log_callback, f"已接收认证文本输入（{len(request.curl_text.strip())} 个字符）")
+            self._emit_log(log_callback, f"Using inline authentication text ({len(request.curl_text.strip())} chars)")
         if target.source_url:
-            self._emit_log(log_callback, f"原始链接: {target.source_url}")
+            self._emit_log(log_callback, f"Source URL: {target.source_url}")
         if target.resolved_url and target.resolved_url != target.source_url:
-            self._emit_log(log_callback, f"解析后链接: {target.resolved_url}")
+            self._emit_log(log_callback, f"Resolved URL: {target.resolved_url}")
 
     def _emit_download_summary(self, downloader, failure_reports, *, callbacks: DownloadCallbacks | None, log_callback) -> None:
         callback = callbacks.log_callback if callbacks else log_callback
@@ -162,22 +166,41 @@ class DownloadService:
         if isinstance(stats, dict):
             self._emit_log(
                 callback,
-                f"下载任务结束: 成功 {stats.get('completed', 0)}，失败 {stats.get('failed', 0)}，跳过 {stats.get('skipped', 0)}。",
+                f"Download finished: success {stats.get('completed', 0)}, failed {stats.get('failed', 0)}, skipped {stats.get('skipped', 0)}.",
             )
-            if stats.get("failed", 0) > 0:
-                self._emit_log(callback, "部分资源下载失败；如果失败项出现 403/429，通常表示触发了频率风控。")
         else:
-            self._emit_log(callback, "下载任务结束。")
+            self._emit_log(callback, "Download finished.")
 
         if failure_reports:
-            self._emit_log(callback, f"失败清单: {failure_reports[0]}")
-            self._emit_log(callback, f"失败文本清单: {failure_reports[1]}")
+            self._emit_log(callback, f"Failed entries CSV: {failure_reports[0]}")
+            self._emit_log(callback, f"Failed entries TXT: {failure_reports[1]}")
 
-    def _build_cookie_manager(self, request: DownloadRequest) -> CookieManager:
-        return CookieManager(
-            curl_file=request.curl_file,
-            curl_text=request.curl_text.strip() or None,
-        )
+    def _build_cookie_manager(self, request: DownloadRequest, log_callback=None) -> CookieManager:
+        inline_text = request.curl_text.strip()
+        if inline_text:
+            self._emit_log(log_callback, "Refreshing the managed browser profile from inline authentication text.")
+            imported = self.browser_auth_service.import_cookie_text(
+                bootstrap_cookie_text=inline_text,
+                log_callback=log_callback,
+            )
+            return CookieManager(curl_text=imported.cookie_text)
+
+        if request.curl_file:
+            try:
+                file_text = read_curl_text(request.curl_file).strip()
+            except FileNotFoundError:
+                file_text = ""
+            if file_text:
+                self._emit_log(log_callback, "Refreshing the managed browser profile from the cURL file.")
+                imported = self.browser_auth_service.import_cookie_text(
+                    bootstrap_cookie_text=file_text,
+                    log_callback=log_callback,
+                )
+                return CookieManager(curl_text=imported.cookie_text)
+
+        self._emit_log(log_callback, "Trying managed browser authentication.")
+        imported = self.browser_auth_service.import_cookie_text(log_callback=log_callback)
+        return CookieManager(curl_text=imported.cookie_text)
 
     def _ensure_save_dir(self, save_dir: Path | str) -> Path:
         save_path = Path(save_dir).expanduser()

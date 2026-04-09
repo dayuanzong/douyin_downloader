@@ -117,7 +117,10 @@ class MainWindowController:
 
     def _run_browser_import(self) -> None:
         try:
-            result = self.browser_auth_service.import_cookie_text(log_callback=self.log)
+            result = self.browser_auth_service.import_cookie_text(
+                bootstrap_cookie_text=self.view.get_curl_text().strip() or None,
+                log_callback=self.log,
+            )
             self.root.after(0, lambda: self._finish_browser_import(result))
         except Exception as exc:
             self.root.after(0, lambda: self._handle_browser_import_error(exc))
