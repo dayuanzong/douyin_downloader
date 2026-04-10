@@ -7,6 +7,7 @@ from typing import Callable
 import aiohttp
 
 from douyin_downloader.downloader.downloader import Downloader
+from douyin_downloader.downloader.exceptions import DownloadCancelled
 
 
 class GUIDownloader(Downloader):
@@ -15,17 +16,22 @@ class GUIDownloader(Downloader):
         api_client,
         save_dir,
         max_workers: int = 2,
+        cancel_event=None,
         progress_callback: Callable[[dict], None] | None = None,
         error_callback: Callable[[dict], None] | None = None,
         queue_init_callback: Callable[[list[str]], None] | None = None,
         queue_update_callback: Callable[[str, str, str, str, str, str], None] | None = None,
     ):
-        super().__init__(api_client, save_dir, max_workers=max_workers)
+        super().__init__(api_client, save_dir, max_workers=max_workers, cancel_event=cancel_event)
         self.progress_callback = progress_callback
         self.error_callback = error_callback
         self.queue_init_callback = queue_init_callback
         self.queue_update_callback = queue_update_callback
         self.download_stats = self._fresh_stats()
+        self._last_progress_emit = 0.0
+        self._last_queue_emit_at: dict[str, float] = {}
+        self._progress_emit_interval = 0.15
+        self._queue_emit_interval = 0.15
 
     @staticmethod
     def _fresh_stats() -> dict:
@@ -44,10 +50,12 @@ class GUIDownloader(Downloader):
         self.current_sec_user_id = sec_user_id
         self.download_stats = self._fresh_stats()
         self.failed_entries = []
+        self._last_progress_emit = 0.0
+        self._last_queue_emit_at.clear()
         aweme_list = self.fetch_user_posts(sec_user_id)
         queue_files = [entry["filename"] for item in aweme_list for entry in self.build_media_entries(item)]
         self.download_stats["total"] = len(queue_files)
-        self._emit_progress()
+        self._emit_progress(force=True)
 
         if self.queue_init_callback:
             self.queue_init_callback(queue_files)
@@ -62,11 +70,13 @@ class GUIDownloader(Downloader):
         )
         self.download_stats = self._fresh_stats()
         self.failed_entries = []
+        self._last_progress_emit = 0.0
+        self._last_queue_emit_at.clear()
 
         media_entries = self.build_media_entries(aweme_detail)
         queue_files = [entry["filename"] for entry in media_entries]
         self.download_stats["total"] = len(queue_files)
-        self._emit_progress()
+        self._emit_progress(force=True)
 
         if self.queue_init_callback:
             self.queue_init_callback(queue_files)
@@ -74,6 +84,7 @@ class GUIDownloader(Downloader):
         await self._download_item(aweme_detail)
 
     async def _download_item(self, item: dict):
+        self._ensure_not_cancelled()
         media_entries = self.build_media_entries(item)
         if not media_entries:
             self._mark_skipped(self.build_base_name(item))
@@ -85,9 +96,11 @@ class GUIDownloader(Downloader):
 
         async with aiohttp.ClientSession(headers=headers) as session:
             for entry in media_entries:
+                self._ensure_not_cancelled()
                 await self._download_media_entry(session, entry)
 
     async def _download_media_entry(self, session: aiohttp.ClientSession, entry: dict):
+        self._ensure_not_cancelled()
         filename = entry["filename"]
         filepath = self.save_dir / filename
 
@@ -98,9 +111,8 @@ class GUIDownloader(Downloader):
         self.download_stats["current_file"] = filename
         self.download_stats["current_progress"] = 0
         self.download_stats["download_speed"] = 0
-        if self.queue_update_callback:
-            self.queue_update_callback(filename, "下载中", "0%", "-", "-", "-")
-        self._emit_progress()
+        self._emit_queue_update(filename, "下载中", "0%", "-", "-", "-", force=True)
+        self._emit_progress(force=True)
 
         try:
             await self._download_with_retry(
@@ -115,9 +127,16 @@ class GUIDownloader(Downloader):
             self.download_stats["completed"] += 1
             self.download_stats["current_file"] = ""
             self.download_stats["current_progress"] = 0
-            if self.queue_update_callback:
-                self.queue_update_callback(filename, "已完成", "100%", "-", "-", "-")
-            self._emit_progress()
+            self._emit_queue_update(filename, "已完成", "100%", "-", "-", "-", force=True)
+            self._emit_progress(force=True)
+
+        except DownloadCancelled:
+            self._cleanup_partial_file(filepath)
+            self.download_stats["current_file"] = ""
+            self.download_stats["current_progress"] = 0
+            self._emit_queue_update(filename, "已取消", "-", "-", "-", "-", force=True)
+            self._emit_progress(force=True)
+            raise
 
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError, KeyError, IndexError) as exc:
             self._cleanup_partial_file(filepath)
@@ -126,8 +145,7 @@ class GUIDownloader(Downloader):
             self.download_stats["current_file"] = ""
             self.download_stats["current_progress"] = 0
             error_text = self._format_download_error(exc)
-            if self.queue_update_callback:
-                self.queue_update_callback(filename, "错误", "0%", "-", "-", error_text)
+            self._emit_queue_update(filename, "错误", "0%", "-", "-", error_text, force=True)
             if self.error_callback:
                 self.error_callback(
                     {
@@ -136,22 +154,21 @@ class GUIDownloader(Downloader):
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                     }
                 )
-            self._emit_progress()
+            self._emit_progress(force=True)
 
     def _update_current_progress(self, filename: str, downloaded_size: int, total_size: int, speed: float) -> None:
         progress = downloaded_size / total_size * 100 if total_size > 0 else 0
         self.download_stats["current_file"] = filename
         self.download_stats["current_progress"] = progress
         self.download_stats["download_speed"] = speed
-        if self.queue_update_callback:
-            self.queue_update_callback(
-                filename,
-                "下载中",
-                f"{progress:.1f}%",
-                f"{speed / 1024:.1f} KB/s",
-                f"{downloaded_size / 1024 / 1024:.1f} MB",
-                "-",
-            )
+        self._emit_queue_update(
+            filename,
+            "下载中",
+            f"{progress:.1f}%",
+            f"{speed / 1024:.1f} KB/s",
+            f"{downloaded_size / 1024 / 1024:.1f} MB",
+            "-",
+        )
         self._emit_progress()
 
     def _format_download_error(self, exc: Exception) -> str:
@@ -161,10 +178,34 @@ class GUIDownloader(Downloader):
 
     def _mark_skipped(self, filename: str) -> None:
         self.download_stats["skipped"] += 1
-        if self.queue_update_callback and filename:
-            self.queue_update_callback(filename, "已跳过", "-", "-", "-", "-")
-        self._emit_progress()
+        if filename:
+            self._emit_queue_update(filename, "已跳过", "-", "-", "-", "-", force=True)
+        self._emit_progress(force=True)
 
-    def _emit_progress(self) -> None:
+    def _emit_progress(self, *, force: bool = False) -> None:
         if self.progress_callback:
+            now = time.time()
+            if not force and now - self._last_progress_emit < self._progress_emit_interval:
+                return
+            self._last_progress_emit = now
             self.progress_callback(self.download_stats.copy())
+
+    def _emit_queue_update(
+        self,
+        filename: str,
+        status: str,
+        progress: str,
+        speed: str,
+        size: str,
+        error: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not self.queue_update_callback:
+            return
+        now = time.time()
+        last_emit = self._last_queue_emit_at.get(filename, 0.0)
+        if not force and now - last_emit < self._queue_emit_interval:
+            return
+        self._last_queue_emit_at[filename] = now
+        self.queue_update_callback(filename, status, progress, speed, size, error)

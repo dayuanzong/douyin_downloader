@@ -50,6 +50,12 @@ class RenderedAwemeDetailTest(unittest.TestCase):
         self.assertEqual(detail["awemeId"], raw_detail["awemeId"])
         self.assertEqual(detail["desc"], raw_detail["desc"])
 
+    def test_detect_unavailable_aweme_page_message(self):
+        html = "<html><body><h1>作品不存在</h1><p>你访问的内容不存在</p></body></html>"
+        message = DouyinAPIClient._detect_unavailable_aweme_page(html, "7626464319467323849")
+        self.assertIsNotNone(message)
+        self.assertIn("作品不存在", message)
+
     def test_normalized_rendered_note_supports_images_and_motion(self):
         raw_detail = {
             "awemeId": "123",

@@ -25,18 +25,39 @@ class DownloadService:
         )
 
     def resolve_target(self, request: DownloadRequest, api_client: DouyinAPIClient | None = None) -> DownloadTarget:
+        requested_mode = (request.download_mode or "author").strip().lower()
         url = extract_share_url(request.url.strip())
         if url:
+            sec_user_id = extract_sec_user_id(url)
             direct_aweme_id = extract_aweme_id(url)
+
+            if requested_mode == "author" and sec_user_id:
+                return DownloadTarget(kind="user", identifier=sec_user_id, source_url=url, resolved_url=url)
+            if requested_mode == "aweme" and direct_aweme_id:
+                return DownloadTarget(kind="aweme", identifier=direct_aweme_id, source_url=url, resolved_url=url)
             if direct_aweme_id:
                 return DownloadTarget(kind="aweme", identifier=direct_aweme_id, source_url=url, resolved_url=url)
-
-            sec_user_id = extract_sec_user_id(url)
             if sec_user_id:
                 return DownloadTarget(kind="user", identifier=sec_user_id, source_url=url, resolved_url=url)
 
             resolved_url = api_client.resolve_url(url) if api_client else url
+            resolved_sec_user_id = extract_sec_user_id(resolved_url)
             resolved_aweme_id = extract_aweme_id(resolved_url)
+
+            if requested_mode == "author" and resolved_sec_user_id:
+                return DownloadTarget(
+                    kind="user",
+                    identifier=resolved_sec_user_id,
+                    source_url=url,
+                    resolved_url=resolved_url,
+                )
+            if requested_mode == "aweme" and resolved_aweme_id:
+                return DownloadTarget(
+                    kind="aweme",
+                    identifier=resolved_aweme_id,
+                    source_url=url,
+                    resolved_url=resolved_url,
+                )
             if resolved_aweme_id:
                 return DownloadTarget(
                     kind="aweme",
@@ -44,8 +65,6 @@ class DownloadService:
                     source_url=url,
                     resolved_url=resolved_url,
                 )
-
-            resolved_sec_user_id = extract_sec_user_id(resolved_url)
             if resolved_sec_user_id:
                 return DownloadTarget(
                     kind="user",
@@ -103,6 +122,7 @@ class DownloadService:
         downloader = self.gui_downloader_factory(
             api_client=api_client,
             save_dir=save_dir,
+            cancel_event=callbacks.cancel_event,
             progress_callback=callbacks.progress_callback,
             error_callback=callbacks.error_callback,
             queue_init_callback=callbacks.queue_init_callback,

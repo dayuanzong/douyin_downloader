@@ -1,0 +1,2 @@
+class DownloadCancelled(Exception):
+    pass

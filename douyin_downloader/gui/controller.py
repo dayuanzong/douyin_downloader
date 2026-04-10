@@ -10,6 +10,7 @@ from douyin_downloader.gui.persistence import FileLogger, PreferencesStore
 from douyin_downloader.gui.state import GUIState
 from douyin_downloader.gui.views import MainWindowView
 from douyin_downloader.models import DownloadCallbacks, DownloadRequest
+from douyin_downloader.downloader.exceptions import DownloadCancelled
 from douyin_downloader.paths import GUI_STATE_FILE, INPUT_HISTORY_FILE, LOG_FILE, ensure_runtime_dir
 from douyin_downloader.services.browser_auth_service import BrowserAuthService, BrowserCookieImportResult
 from douyin_downloader.services.download_service import DownloadService
@@ -28,6 +29,8 @@ class MainWindowController:
         self.download_thread = None
         self.browser_import_thread = None
         self.download_queue: list[dict] = []
+        self.cancel_event = threading.Event()
+        self.clear_queue_after_cancel = False
         self._save_after_id = None
         self.browser_auth_service = BrowserAuthService(
             preferred_executable=Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
@@ -118,7 +121,6 @@ class MainWindowController:
     def _run_browser_import(self) -> None:
         try:
             result = self.browser_auth_service.import_cookie_text(
-                bootstrap_cookie_text=self.view.get_curl_text().strip() or None,
                 log_callback=self.log,
             )
             self.root.after(0, lambda: self._finish_browser_import(result))
@@ -158,6 +160,7 @@ class MainWindowController:
             url=input_url,
             save_dir=Path(self.state.save_dir_var.get().strip()),
             curl_text=self.view.get_curl_text(),
+            download_mode=selected_mode,
         )
 
     def start_download(self) -> None:
@@ -185,6 +188,8 @@ class MainWindowController:
 
         self._reset_run_logs()
         self.log_user_input(request)
+        self.cancel_event = threading.Event()
+        self.clear_queue_after_cancel = False
         self.state.is_downloading = True
         self.view.start_button.configure(state=tk.DISABLED)
         self.view.stop_button.configure(state=tk.NORMAL)
@@ -200,6 +205,7 @@ class MainWindowController:
                 0, self.update_queue_item, filename, status, progress, speed, size, error
             ),
             log_callback=self.log,
+            cancel_event=self.cancel_event,
         )
 
         self.download_thread = threading.Thread(
@@ -215,10 +221,13 @@ class MainWindowController:
             self.service.run_gui_download(request, callbacks)
             success = True
             self.root.after(0, lambda: self.state.progress_var.set("下载完成!"))
+        except DownloadCancelled:
+            self.log("下载任务已取消。")
+            self.root.after(0, lambda: self.state.progress_var.set("下载已取消"))
         except Exception as exc:
             error_message = self._format_exception_message(exc, "下载失败")
             self.log(f"下载错误: {error_message}")
-            self.root.after(0, lambda: messagebox.showerror("错误", error_message))
+            self.root.after(0, lambda: messagebox.showerror("错误", error_message, parent=self.root))
         finally:
             self.root.after(0, lambda: self.download_completed(success))
 
@@ -239,16 +248,25 @@ class MainWindowController:
             )
 
         self.state.progress_var.set(progress_text)
-        self.state.status_var.set(
-            f"下载中 - 总计: {stats['total']} | 已完成: {stats['completed']} | 失败: {stats['failed']}"
-        )
+        if self.cancel_event.is_set():
+            self.state.status_var.set("正在停止下载...")
+        else:
+            self.state.status_var.set(
+                f"下载中 - 总计: {stats['total']} | 已完成: {stats['completed']} | 失败: {stats['failed']}"
+            )
         self.view.update_metric("queue", f"{stats['total']} 个任务")
 
     def download_completed(self, success: bool = True) -> None:
         self.state.is_downloading = False
         self.view.start_button.configure(state=tk.NORMAL)
         self.view.stop_button.configure(state=tk.DISABLED)
-        if success:
+        if self.cancel_event.is_set():
+            self.state.status_var.set("下载已取消")
+            self.view.update_metric("status", "已取消")
+            if self.clear_queue_after_cancel:
+                self._clear_queue_items()
+                self.clear_queue_after_cancel = False
+        elif success:
             self.state.status_var.set("下载完成")
             self.view.update_metric("status", "已完成")
         else:
@@ -258,9 +276,10 @@ class MainWindowController:
     def stop_download(self) -> None:
         if not self.state.is_downloading:
             return
-        self.state.status_var.set("停止请求已记录")
-        self.log("用户请求停止下载，当前取消能力将在后续任务取消器接入后完善。")
-        messagebox.showinfo("提示", "当前版本已经完成模块重构，但真正的下载中断还未接入。")
+        self.cancel_event.set()
+        self.state.status_var.set("正在停止下载...")
+        self.view.update_metric("status", "正在停止")
+        self.log("用户请求停止下载，正在取消当前任务。")
 
     def log(self, message: str) -> None:
         print(message)
@@ -326,9 +345,16 @@ class MainWindowController:
         self.state.download_mode_var.set(data.get("download_mode", "author"))
         if data.get("save_dir"):
             self.state.save_dir_var.set(data["save_dir"])
-        if data.get("curl_text"):
-            self.view.set_curl_text(data["curl_text"])
-            self.view.update_metric("auth", "已恢复上次输入")
+        saved_curl_text = data.get("curl_text", "")
+        if saved_curl_text:
+            normalized_cookie_text = self.browser_auth_service._normalize_cookie_text_input(saved_curl_text)
+            if saved_curl_text.lstrip().lower().startswith("curl ") or self.browser_auth_service._is_rich_authenticated_cookie_text(
+                normalized_cookie_text
+            ):
+                self.view.set_curl_text(saved_curl_text)
+                self.view.update_metric("auth", "已恢复上次输入")
+            else:
+                self.log("已跳过恢复过弱的认证输入，请重新执行浏览器导入或重新粘贴完整 cURL。")
 
         active_section = data.get("active_section", "workspace")
         active_tab = data.get("active_tab", "task")
@@ -339,19 +365,32 @@ class MainWindowController:
         self.save_preferences()
         self.root.destroy()
 
-    def clear_queue(self) -> None:
-        if not messagebox.askyesno("确认", "确定要清空下载队列吗？"):
-            return
+    def _clear_queue_items(self) -> None:
         for item in self.view.queue_tree.get_children():
             self.view.queue_tree.delete(item)
         self.download_queue.clear()
         self.view.update_metric("queue", "0 个任务")
+
+    def clear_queue(self) -> None:
+        if self.state.is_downloading:
+            if not messagebox.askyesno(
+                "确认",
+                "当前仍在下载中。是否先停止当前任务，并在停止后清空队列？",
+                parent=self.root,
+            ):
+                return
+            self.clear_queue_after_cancel = True
+            self.stop_download()
+            return
+        if not messagebox.askyesno("确认", "确定要清空下载队列吗？", parent=self.root):
+            return
+        self._clear_queue_items()
         self.log("下载队列已清空")
 
     def pause_selected(self) -> None:
         selected = self.view.queue_tree.selection()
         if not selected:
-            messagebox.showinfo("提示", "请先选择要暂停的任务")
+            messagebox.showinfo("提示", "请先选择要暂停的任务", parent=self.root)
             return
         for item in selected:
             values = self.view.queue_tree.item(item, "values")
@@ -362,7 +401,7 @@ class MainWindowController:
     def resume_selected(self) -> None:
         selected = self.view.queue_tree.selection()
         if not selected:
-            messagebox.showinfo("提示", "请先选择要继续的任务")
+            messagebox.showinfo("提示", "请先选择要继续的任务", parent=self.root)
             return
         for item in selected:
             values = self.view.queue_tree.item(item, "values")
@@ -373,9 +412,9 @@ class MainWindowController:
     def delete_selected(self) -> None:
         selected = self.view.queue_tree.selection()
         if not selected:
-            messagebox.showinfo("提示", "请先选择要删除的任务")
+            messagebox.showinfo("提示", "请先选择要删除的任务", parent=self.root)
             return
-        if not messagebox.askyesno("确认", f"确定要删除选中的 {len(selected)} 个任务吗？"):
+        if not messagebox.askyesno("确认", f"确定要删除选中的 {len(selected)} 个任务吗？", parent=self.root):
             return
         for item in selected:
             values = self.view.queue_tree.item(item, "values")

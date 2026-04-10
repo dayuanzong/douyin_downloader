@@ -27,6 +27,15 @@ except ImportError:  # pragma: no cover - optional dependency
 
 TARGET_DOMAINS = ("douyin.com", "iesdouyin.com")
 COOKIE_REQUIRED_NAMES = ("sessionid", "sid_tt", "uid_tt", "ttwid")
+COOKIE_CONTEXT_NAMES = (
+    "msToken",
+    "passport_csrf_token",
+    "sid_guard",
+    "sessionid_ss",
+    "uid_tt_ss",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +234,7 @@ class BrowserAuthService:
             return None
         cookie_text = self._build_cookie_text(cookies)
         cookie_count = self._count_cookie_pairs(cookie_text)
-        if cookie_count == 0 or not self._looks_authenticated(cookie_text):
+        if cookie_count == 0 or not self._is_rich_authenticated_cookie_text(cookie_text):
             return None
 
         self._emit_log(log_callback, f"Loaded {cookie_count} cookies from managed {browser.name} profile.")
@@ -449,6 +458,13 @@ class BrowserAuthService:
         cookie_text = self._read_cached_cookie_text()
         if not self._looks_authenticated(cookie_text):
             return None
+        if not self._is_rich_authenticated_cookie_text(cookie_text):
+            self._emit_log(
+                log_callback,
+                f"Ignoring weak local auth cache with {self._count_cookie_pairs(cookie_text)} cookies.",
+            )
+            self._clear_cached_cookie_text()
+            return None
         self._emit_log(log_callback, f"Loaded {self._count_cookie_pairs(cookie_text)} cookies from the local auth cache.")
         return self._result_from_cookie_text(browser, cookie_text, source="local auth cache")
 
@@ -489,6 +505,12 @@ class BrowserAuthService:
         ensure_runtime_dir()
         MANAGED_AUTH_COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
         MANAGED_AUTH_COOKIE_FILE.write_text(cookie_text, encoding="utf-8")
+
+    def _clear_cached_cookie_text(self) -> None:
+        try:
+            MANAGED_AUTH_COOKIE_FILE.unlink()
+        except FileNotFoundError:
+            return
 
     @staticmethod
     def _cookie_text_to_context_cookies(cookie_text: str) -> list[dict]:
@@ -560,6 +582,16 @@ class BrowserAuthService:
         if not cookie_text:
             return False
         return any(f"{name}=" in cookie_text for name in COOKIE_REQUIRED_NAMES)
+
+    @staticmethod
+    def _is_rich_authenticated_cookie_text(cookie_text: str) -> bool:
+        if not BrowserAuthService._looks_authenticated(cookie_text):
+            return False
+        cookie_count = BrowserAuthService._count_cookie_pairs(cookie_text)
+        if cookie_count >= 8:
+            return True
+        context_hits = sum(1 for name in COOKIE_CONTEXT_NAMES if f"{name}=" in cookie_text)
+        return context_hits >= 2
 
     @staticmethod
     def _label_for_path(executable_path: Path) -> str:

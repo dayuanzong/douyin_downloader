@@ -64,6 +64,35 @@ class BrowserAuthServiceTest(unittest.TestCase):
         self.assertTrue(BrowserAuthService._looks_authenticated("ttwid=abc; sessionid=123"))
         self.assertFalse(BrowserAuthService._looks_authenticated("passport_csrf_token=123"))
 
+    def test_rich_authenticated_cookie_text_rejects_too_sparse_cache(self):
+        self.assertFalse(BrowserAuthService._is_rich_authenticated_cookie_text("sessionid=new; ttwid=new"))
+        self.assertTrue(
+            BrowserAuthService._is_rich_authenticated_cookie_text(
+                "sessionid=1; ttwid=2; uid_tt=3; sid_tt=4; msToken=5; passport_csrf_token=6; sid_guard=7; sessionid_ss=8"
+            )
+        )
+
+    def test_import_from_cached_cookie_store_ignores_weak_cache(self):
+        class StubBrowserAuthService(BrowserAuthService):
+            def __init__(self):
+                super().__init__(
+                    browser_candidates=(
+                        BrowserCandidate("Edge", Path(r"C:\stub\msedge.exe"), Path(r"C:\stub\User Data")),
+                    )
+                )
+                self.cleared = False
+
+            def _read_cached_cookie_text(self) -> str:
+                return "sessionid=new; ttwid=new"
+
+            def _clear_cached_cookie_text(self) -> None:
+                self.cleared = True
+
+        service = StubBrowserAuthService()
+        result = service._import_from_cached_cookie_store(service.browser_candidates[0])
+        self.assertIsNone(result)
+        self.assertTrue(service.cleared)
+
     def test_import_cookie_text_prefers_provided_authentication_text_over_cached_cookie(self):
         class StubBrowserAuthService(BrowserAuthService):
             def __init__(self):

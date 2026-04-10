@@ -53,10 +53,31 @@ class TargetResolutionTest(unittest.TestCase):
         request = DownloadRequest(
             url="https://www.douyin.com/user/MS4wLjABAAAA_TEST_USER?from_tab_name=main&vid=7557333739286662427",
             save_dir=Path("downloads"),
+            download_mode="author",
         )
         target = self.service.resolve_target(request)
         self.assertEqual(target.kind, "user")
         self.assertEqual(target.identifier, "MS4wLjABAAAA_TEST_USER")
+
+    def test_resolve_target_for_author_mode_ignores_modal_id(self):
+        request = DownloadRequest(
+            url="https://www.douyin.com/user/MS4wLjABAAAA_TEST_USER?from_tab_name=main&modal_id=7654321098765432109&vid=7654321098765432109",
+            save_dir=Path("downloads"),
+            download_mode="author",
+        )
+        target = self.service.resolve_target(request)
+        self.assertEqual(target.kind, "user")
+        self.assertEqual(target.identifier, "MS4wLjABAAAA_TEST_USER")
+
+    def test_resolve_target_for_aweme_mode_uses_modal_id(self):
+        request = DownloadRequest(
+            url="https://www.douyin.com/user/MS4wLjABAAAA_TEST_USER?from_tab_name=main&modal_id=7654321098765432109&vid=7654321098765432109",
+            save_dir=Path("downloads"),
+            download_mode="aweme",
+        )
+        target = self.service.resolve_target(request)
+        self.assertEqual(target.kind, "aweme")
+        self.assertEqual(target.identifier, "7654321098765432109")
 
     def test_resolve_target_from_short_link_redirect(self):
         request = DownloadRequest(

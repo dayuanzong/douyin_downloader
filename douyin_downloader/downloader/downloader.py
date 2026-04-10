@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -9,20 +10,29 @@ from urllib.parse import urlparse
 import aiohttp
 
 from ..api.client import DouyinAPIClient
+from .exceptions import DownloadCancelled
 from .queue_manager import QueueManager
 
 
 class Downloader:
     RETRYABLE_STATUS_CODES = {403, 408, 409, 425, 429, 500, 502, 503, 504}
 
-    def __init__(self, api_client: DouyinAPIClient, save_dir: Path, max_workers: int = 2):
+    def __init__(
+        self,
+        api_client: DouyinAPIClient,
+        save_dir: Path,
+        max_workers: int = 2,
+        cancel_event: threading.Event | None = None,
+    ):
         self.api_client = api_client
         self.save_dir = save_dir
-        self.queue_manager = QueueManager(max_workers)
+        self.cancel_event = cancel_event
+        self.queue_manager = QueueManager(max_workers, cancel_event=cancel_event)
         self.current_sec_user_id = None
         self.failed_entries: list[dict] = []
 
     async def _download_item(self, item: dict):
+        self._ensure_not_cancelled()
         media_entries = self.build_media_entries(item)
         if not media_entries:
             print(f"作品 {item.get('aweme_id')} 没有可下载的媒体数据，跳过下载。")
@@ -34,6 +44,7 @@ class Downloader:
 
         async with aiohttp.ClientSession(headers=headers) as session:
             for entry in media_entries:
+                self._ensure_not_cancelled()
                 await self._download_entry(session, entry)
 
     def _get_highest_quality_url(self, video: dict) -> str | None:
@@ -79,6 +90,7 @@ class Downloader:
 
         print("正在获取所有作品列表...")
         while has_more:
+            self._ensure_not_cancelled()
             data = self.api_client.get_user_posts(sec_user_id, max_cursor)
             if not data:
                 break
@@ -99,6 +111,7 @@ class Downloader:
 
     async def download_aweme(self, aweme_detail: dict):
         self.failed_entries = []
+        self._ensure_not_cancelled()
         self.current_sec_user_id = (
             aweme_detail.get("author", {}).get("sec_uid")
             if isinstance(aweme_detail.get("author"), dict)
@@ -107,6 +120,7 @@ class Downloader:
         await self._download_item(aweme_detail)
 
     async def _download_entry(self, session: aiohttp.ClientSession, entry: dict):
+        self._ensure_not_cancelled()
         filename = entry["filename"]
         filepath = self.save_dir / filename
 
@@ -131,10 +145,15 @@ class Downloader:
         max_attempts = self._max_attempts_for_entry(entry)
         last_exc = None
         for attempt in range(max_attempts):
+            self._ensure_not_cancelled()
             for media_url in candidate_urls:
+                self._ensure_not_cancelled()
                 try:
                     await self._stream_to_file(session, media_url, filepath, progress_callback=progress_callback)
                     return
+                except DownloadCancelled:
+                    self._cleanup_partial_file(filepath)
+                    raise
                 except aiohttp.ClientResponseError as exc:
                     last_exc = exc
                     self._cleanup_partial_file(filepath)
@@ -160,6 +179,7 @@ class Downloader:
 
             with open(filepath, "wb") as file:
                 while True:
+                    self._ensure_not_cancelled()
                     chunk = await response.content.read(8192)
                     if not chunk:
                         break
@@ -526,5 +546,10 @@ class Downloader:
     async def download_user_posts(self, sec_user_id: str):
         self.current_sec_user_id = sec_user_id
         self.failed_entries = []
+        self._ensure_not_cancelled()
         aweme_list = self.fetch_user_posts(sec_user_id)
         await self.queue_manager.download_batch(self._download_item, aweme_list)
+
+    def _ensure_not_cancelled(self) -> None:
+        if self.cancel_event and self.cancel_event.is_set():
+            raise DownloadCancelled("下载已取消")

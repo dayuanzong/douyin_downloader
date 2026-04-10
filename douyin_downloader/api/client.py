@@ -358,10 +358,15 @@ class DouyinAPIClient:
                 headers["referer"] = work_url
                 response = self.session.get(work_url, headers=headers, timeout=8)
                 response.raise_for_status()
-                detail = self._extract_aweme_detail_from_page_content(response.text, aweme_id)
+                page_content = response.text
+                detail = self._extract_aweme_detail_from_page_content(page_content, aweme_id)
                 if detail:
                     self._clear_error()
                     return self._normalize_rendered_aweme_detail(detail)
+                missing_message = self._detect_unavailable_aweme_page(page_content, aweme_id)
+                if missing_message:
+                    self._set_error(missing_message, kind="api")
+                    return None
             except requests.Timeout as exc:
                 last_error_message = f"网络超时，作品页面加载失败，请稍后重试: {exc}"
                 self._set_error(last_error_message, kind="network")
@@ -373,7 +378,10 @@ class DouyinAPIClient:
                     response.close()
         if last_error_message:
             return None
-        self._set_error(f"未能从作品页面提取详情: {aweme_id}", kind="api")
+        self._set_error(
+            "未能获取作品详情，作品可能不存在、已删除、仅自己可见，或分享链接已经失效，请重新复制最新分享链接后重试。",
+            kind="api",
+        )
         return None
 
     @staticmethod
@@ -544,6 +552,25 @@ class DouyinAPIClient:
         if cleaned.endswith(" - 抖音"):
             cleaned = cleaned[:-5].strip()
         return DouyinAPIClient._repair_mojibake_text(cleaned)
+
+    @staticmethod
+    def _detect_unavailable_aweme_page(page_content: str, aweme_id: str) -> str | None:
+        if not isinstance(page_content, str) or not page_content.strip():
+            return None
+        if aweme_id in page_content and "videoDetail" in page_content:
+            return None
+        missing_markers = (
+            "内容不存在",
+            "作品不存在",
+            "视频不见了",
+            "该内容已删除",
+            "无法查看该内容",
+            "页面不存在",
+            "您访问的页面不存在",
+        )
+        if any(marker in page_content for marker in missing_markers):
+            return "作品不存在、已删除、仅自己可见，或分享链接已经失效，请重新复制最新分享链接后重试。"
+        return None
 
     @staticmethod
     def _extract_aweme_detail_from_page_content(page_content: str, aweme_id: str) -> dict | None:
