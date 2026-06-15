@@ -51,6 +51,7 @@ class MainWindowController:
 
         self.view.browse_dir_button.configure(command=self.browse_directory)
         self.view.import_browser_button.configure(command=self.import_from_browser)
+        self.view.login_browser_button.configure(command=self.login_in_browser)
         self.view.import_curl_button.configure(command=self.import_curl_text)
         self.view.clear_curl_button.configure(command=self.clear_auth_input)
         self.view.start_button.configure(command=self.start_download)
@@ -103,31 +104,48 @@ class MainWindowController:
         self.save_preferences()
 
     def import_from_browser(self) -> None:
+        self._start_browser_auth(force_login=False)
+
+    def login_in_browser(self) -> None:
+        self._start_browser_auth(force_login=True)
+
+    def _start_browser_auth(self, *, force_login: bool) -> None:
         if self.browser_import_thread and self.browser_import_thread.is_alive():
             return
 
         self.switch_workspace_tab("auth")
-        self.view.import_browser_button.configure(state=tk.DISABLED)
-        self.state.status_var.set("等待浏览器登录导入...")
-        self.view.update_metric("auth", "浏览器登录中")
-        self.log("准备通过浏览器登录导入 Cookie。")
+        self._set_browser_auth_buttons(tk.DISABLED)
+        if force_login:
+            self.state.status_var.set("等待在浏览器中完成抖音登录...")
+            self.view.update_metric("auth", "等待浏览器登录")
+            self.log("正在打开项目专用 Edge 登录窗口，请在窗口中完成抖音登录。")
+        else:
+            self.state.status_var.set("正在自动导入浏览器认证...")
+            self.view.update_metric("auth", "正在自动导入")
+            self.log("正在自动检查浏览器登录认证。")
 
         self.browser_import_thread = threading.Thread(
             target=self._run_browser_import,
+            args=(force_login,),
             daemon=True,
         )
         self.browser_import_thread.start()
 
-    def _run_browser_import(self) -> None:
+    def _run_browser_import(self, force_login: bool = False) -> None:
         try:
-            result = self.browser_auth_service.import_cookie_text(
-                log_callback=self.log,
-            )
+            if force_login:
+                result = self.browser_auth_service.login_with_browser(log_callback=self.log)
+            else:
+                result = self.browser_auth_service.import_cookie_text(log_callback=self.log)
             self.root.after(0, lambda: self._finish_browser_import(result))
         except Exception as exc:
             self.root.after(0, lambda: self._handle_browser_import_error(exc))
         finally:
-            self.root.after(0, lambda: self.view.import_browser_button.configure(state=tk.NORMAL))
+            self.root.after(0, lambda: self._set_browser_auth_buttons(tk.NORMAL))
+
+    def _set_browser_auth_buttons(self, state: str) -> None:
+        self.view.import_browser_button.configure(state=state)
+        self.view.login_browser_button.configure(state=state)
 
     def _finish_browser_import(self, result: BrowserCookieImportResult) -> None:
         self.view.set_curl_text(result.cookie_text)

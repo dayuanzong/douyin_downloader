@@ -126,6 +126,10 @@ class BrowserAuthService:
         if bootstrap_cookie_text:
             normalized_cookie_text = self._normalize_cookie_text_input(bootstrap_cookie_text)
             if normalized_cookie_text:
+                login_state = self._validate_cookie_login(browser, normalized_cookie_text)
+                if login_state is False:
+                    self._clear_cached_cookie_text()
+                    raise RuntimeError("当前抖音认证已经失效，请重新执行浏览器登录导入后重试。")
                 self._write_cached_cookie_text(normalized_cookie_text)
                 try:
                     self._seed_managed_profile_from_cookie_text(
@@ -151,6 +155,11 @@ class BrowserAuthService:
 
         installed_result = self._import_from_installed_browser(browser, log_callback=log_callback)
         if installed_result:
+            login_state = self._validate_cookie_login(browser, installed_result.cookie_text)
+            if login_state is False:
+                self._emit_log(log_callback, f"Ignoring expired cookies from {installed_result.source}.")
+                installed_result = None
+        if installed_result:
             self._write_cached_cookie_text(installed_result.cookie_text)
             try:
                 self._seed_managed_profile_from_cookie_text(
@@ -173,6 +182,21 @@ class BrowserAuthService:
         return self._import_from_interactive_browser(
             browser=browser,
             target_url=target_url,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+            log_callback=log_callback,
+        )
+
+    def login_with_browser(
+        self,
+        timeout_seconds: int = 300,
+        poll_interval: float = 1.0,
+        log_callback=None,
+    ) -> BrowserCookieImportResult:
+        browser = self.resolve_browser()
+        return self._import_from_interactive_browser(
+            browser=browser,
+            target_url="https://www.douyin.com/user/self?from_tab_name=main",
             timeout_seconds=timeout_seconds,
             poll_interval=poll_interval,
             log_callback=log_callback,
@@ -235,6 +259,10 @@ class BrowserAuthService:
         cookie_text = self._build_cookie_text(cookies)
         cookie_count = self._count_cookie_pairs(cookie_text)
         if cookie_count == 0 or not self._is_rich_authenticated_cookie_text(cookie_text):
+            return None
+        login_state = self._validate_cookie_login(browser, cookie_text)
+        if login_state is False:
+            self._emit_log(log_callback, f"Managed {browser.name} profile login has expired.")
             return None
 
         self._emit_log(log_callback, f"Loaded {cookie_count} cookies from managed {browser.name} profile.")
@@ -300,6 +328,7 @@ class BrowserAuthService:
         self._emit_log(log_callback, f"Opening managed {browser.name} profile for manual sign-in.")
         best_cookie_text = ""
         best_cookie_count = 0
+        login_confirmed = False
 
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
@@ -315,18 +344,33 @@ class BrowserAuthService:
                     pass
 
                 deadline = time.monotonic() + timeout_seconds
+                next_login_check = 0.0
                 while time.monotonic() < deadline:
+                    if page.is_closed():
+                        raise RuntimeError("登录窗口已关闭，未完成抖音登录。")
                     cookie_text = self._build_cookie_text(context.cookies("https://www.douyin.com/"))
                     cookie_count = self._count_cookie_pairs(cookie_text)
                     if cookie_count >= best_cookie_count and self._looks_authenticated(cookie_text):
                         best_cookie_text = cookie_text
                         best_cookie_count = cookie_count
+                    now = time.monotonic()
+                    if (
+                        best_cookie_text
+                        and self._is_rich_authenticated_cookie_text(best_cookie_text)
+                        and now >= next_login_check
+                    ):
+                        next_login_check = now + 2.0
+                        login_confirmed = self._validate_login_in_context(context)
+                        if login_confirmed:
+                            break
                     time.sleep(poll_interval)
             finally:
                 context.close()
 
         if not best_cookie_text:
-            raise RuntimeError("No usable Douyin login cookies were collected from the browser.")
+            raise RuntimeError("浏览器中没有获取到可用的抖音登录认证。")
+        if not login_confirmed:
+            raise RuntimeError("等待抖音登录超时，请重新打开登录窗口后完成登录。")
 
         self._write_cached_cookie_text(best_cookie_text)
         self._emit_log(log_callback, f"Collected {best_cookie_count} cookies from interactive sign-in.")
@@ -337,6 +381,27 @@ class BrowserAuthService:
             cookie_count=best_cookie_count,
             source=f"interactive {browser.name} profile",
         )
+
+    @staticmethod
+    def _validate_login_in_context(context) -> bool:
+        check_page = context.new_page()
+        try:
+            check_page.goto(
+                "https://www.douyin.com/user/self?from_tab_name=main",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            check_page.wait_for_timeout(1200)
+            if "验证码中间页" in check_page.title():
+                return False
+            body_text = check_page.locator("body").inner_text(timeout=3000)
+            if "未登录" in body_text or "登录后即可观看喜欢、收藏的视频" in body_text:
+                return False
+            return "抖音号：" in body_text or "编辑资料" in body_text
+        except PlaywrightError:
+            return False
+        finally:
+            check_page.close()
 
     def _read_profile_cookie_text(self, user_data_dir: Path, profile_dir: Path) -> str:
         cookie_db_path = profile_dir / "Network/Cookies"
@@ -465,8 +530,52 @@ class BrowserAuthService:
             )
             self._clear_cached_cookie_text()
             return None
+        login_state = self._validate_cookie_login(browser, cookie_text)
+        if login_state is False:
+            self._emit_log(log_callback, "Ignoring expired local authentication cache.")
+            self._clear_cached_cookie_text()
+            return None
         self._emit_log(log_callback, f"Loaded {self._count_cookie_pairs(cookie_text)} cookies from the local auth cache.")
         return self._result_from_cookie_text(browser, cookie_text, source="local auth cache")
+
+    def _validate_cookie_login(self, browser: BrowserCandidate, cookie_text: str) -> bool | None:
+        if sync_playwright is None or not browser.executable_path.exists():
+            return None
+
+        try:
+            with sync_playwright() as playwright:
+                browser_instance = playwright.chromium.launch(
+                    executable_path=str(browser.executable_path),
+                    headless=True,
+                )
+                try:
+                    context = browser_instance.new_context(
+                        user_agent=self._browser_user_agent(browser),
+                        locale="zh-CN",
+                        viewport={"width": 1280, "height": 720},
+                    )
+                    context.add_cookies(self._cookie_text_to_context_cookies(cookie_text))
+                    page = context.new_page()
+                    try:
+                        page.goto(
+                            "https://www.douyin.com/user/self?from_tab_name=main",
+                            wait_until="domcontentloaded",
+                            timeout=30000,
+                        )
+                        page.wait_for_timeout(2500)
+                        if "验证码中间页" in page.title():
+                            return None
+                        body_text = page.locator("body").inner_text(timeout=3000)
+                        if "未登录" in body_text or "登录后即可观看喜欢、收藏的视频" in body_text:
+                            return False
+                        return True
+                    finally:
+                        page.close()
+                        context.close()
+                finally:
+                    browser_instance.close()
+        except Exception:
+            return None
 
     @staticmethod
     def _normalize_cookie_text_input(cookie_text: str) -> str:
@@ -601,6 +710,26 @@ class BrowserAuthService:
         if "chrome" in lower_name:
             return "Chrome"
         return executable_path.stem
+
+    @staticmethod
+    def _browser_user_agent(browser: BrowserCandidate) -> str:
+        major_version = 136
+        version_pattern = re.compile(r"^\d+(?:\.\d+){3}$")
+        try:
+            versions = [
+                tuple(int(part) for part in path.name.split("."))
+                for path in browser.executable_path.parent.iterdir()
+                if path.is_dir() and version_pattern.match(path.name)
+            ]
+            if versions:
+                major_version = max(versions)[0]
+        except OSError:
+            pass
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major_version}.0.0.0 Safari/537.36 "
+            f"Edg/{major_version}.0.0.0"
+        )
 
     @staticmethod
     def _guess_user_data_dir(executable_path: Path) -> Path:

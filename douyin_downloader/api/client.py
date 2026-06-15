@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 PACE_F_SCRIPT_PATTERN = re.compile(r'self\.__pace_f\.push\(\[1,"(.*?)"\]\)</script>', re.DOTALL)
 DEFAULT_EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+EDGE_VERSION_PATTERN = re.compile(r"^\d+(?:\.\d+){3}$")
 
 
 class DouyinAPIClient:
@@ -32,10 +33,8 @@ class DouyinAPIClient:
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.proxies.clear()
-        self.user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
+        self.browser_major_version = self._detect_edge_major_version()
+        self.user_agent = self._build_edge_user_agent(self.browser_major_version)
         self.error_callback = error_callback
         self.last_error: str | None = None
         self.last_error_kind: str | None = None
@@ -46,16 +45,16 @@ class DouyinAPIClient:
             "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
             "priority": "u=1, i",
             "referer": "https://www.douyin.com/",
-            "sec-ch-ua": '"Chromium";v="142", "Microsoft Edge";v="142", "Not_A Brand";v="99"',
+            "sec-ch-ua": (
+                f'"Chromium";v="{self.browser_major_version}", '
+                f'"Microsoft Edge";v="{self.browser_major_version}", "Not_A Brand";v="99"'
+            ),
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
-            "user-agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0"
-            ),
+            "user-agent": self.user_agent,
             "Cookie": self.cookie_manager.get_cookie()
             or "ttwid=1%7CZ6MKbdL_Kj8xKRwSvvjvUiDb5-FNznsFV5MiBzYOCUU%7C1762648371%7C1de9cecc994a65aa7a1158b5ae70072bf553beb847b95660f043d78093974a62",
         }
@@ -164,10 +163,10 @@ class DouyinAPIClient:
             "browser_language": "zh-CN",
             "browser_platform": "Win32",
             "browser_name": "Edge",
-            "browser_version": "142.0.0.0",
+            "browser_version": f"{self.browser_major_version}.0.0.0",
             "browser_online": "true",
             "engine_name": "Blink",
-            "engine_version": "142.0.0.0",
+            "engine_version": f"{self.browser_major_version}.0.0.0",
             "os_name": "Windows",
             "os_version": "10",
             "device_memory": "8",
@@ -177,12 +176,171 @@ class DouyinAPIClient:
             "round_trip_time": "200",
             "webid": "7569420535352804914",
         }
-        return self._request_json(
+        data = self._request_json(
             "https://www.douyin.com/aweme/v1/web/aweme/post/",
             params=params,
             sign=True,
+            emit_error=False,
             timeout_seconds=10,
-            max_attempts=3,
+            max_attempts=1,
+        )
+        if isinstance(data, dict) and isinstance(data.get("aweme_list"), list):
+            return data
+
+        browser_data = self._get_browser_user_posts(sec_user_id, max_cursor=max_cursor)
+        if browser_data:
+            return browser_data
+
+        self._emit_error(self.last_error or "未能获取作者作品列表")
+        return None
+
+    def _get_browser_user_posts(self, sec_user_id: str, *, max_cursor: int = 0) -> dict | None:
+        if sync_playwright is None or not DEFAULT_EDGE_PATH.exists():
+            return None
+        if max_cursor:
+            self._set_error("作者作品列表分页请求失败，请重新开始该作者的下载任务。", kind="api")
+            return None
+
+        captured_pages: list[dict] = []
+        last_browser_error = None
+        body_text = ""
+        profile_url = f"https://www.douyin.com/user/{sec_user_id}?from_tab_name=main"
+
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(executable_path=str(DEFAULT_EDGE_PATH), headless=True)
+                try:
+                    context = browser.new_context(
+                        user_agent=self.user_agent,
+                        locale="zh-CN",
+                        viewport={"width": 1280, "height": 720},
+                    )
+                    self._add_auth_cookies_to_context(context)
+                    page = context.new_page()
+
+                    def collect_response(response) -> None:
+                        if "/aweme/v1/web/aweme/post/" not in response.url:
+                            return
+                        try:
+                            payload = response.json()
+                        except Exception:
+                            return
+                        if isinstance(payload, dict) and isinstance(payload.get("aweme_list"), list):
+                            captured_pages.append(payload)
+
+                    page.on("response", collect_response)
+                    try:
+                        page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+                        for _ in range(12):
+                            if any(item.get("aweme_list") for item in captured_pages):
+                                break
+                            page.wait_for_timeout(500)
+
+                        no_new_page_rounds = 0
+                        previous_page_count = len(captured_pages)
+                        for _ in range(30):
+                            if captured_pages and captured_pages[-1].get("has_more") in (0, False):
+                                break
+                            page.evaluate(
+                                """() => {
+                                    const nodes = [...document.querySelectorAll('*')]
+                                        .filter((node) => node.scrollHeight > node.clientHeight + 100);
+                                    for (const node of nodes) {
+                                        node.scrollTop = node.scrollHeight;
+                                        node.dispatchEvent(new Event('scroll', { bubbles: true }));
+                                    }
+                                }"""
+                            )
+                            page.wait_for_timeout(700)
+                            if len(captured_pages) == previous_page_count:
+                                no_new_page_rounds += 1
+                            else:
+                                previous_page_count = len(captured_pages)
+                                no_new_page_rounds = 0
+                            if no_new_page_rounds >= 4:
+                                break
+
+                        try:
+                            body_text = page.locator("body").inner_text(timeout=3000)
+                        except PlaywrightError:
+                            body_text = ""
+                    finally:
+                        page.close()
+                        context.close()
+                finally:
+                    browser.close()
+        except Exception as exc:
+            last_browser_error = exc
+
+        if not captured_pages:
+            if last_browser_error is not None:
+                self._set_error(f"浏览器获取作者作品列表失败: {last_browser_error}", kind="network")
+            return None
+
+        aweme_list: list[dict] = []
+        seen_aweme_ids: set[str] = set()
+        for captured in captured_pages:
+            for aweme in captured.get("aweme_list") or []:
+                if not isinstance(aweme, dict):
+                    continue
+                aweme_id = str(aweme.get("aweme_id") or "")
+                if not aweme_id or aweme_id in seen_aweme_ids:
+                    continue
+                seen_aweme_ids.add(aweme_id)
+                aweme_list.append(aweme)
+
+        last_page = captured_pages[-1]
+        has_more = bool(last_page.get("has_more"))
+        login_limited = "登录后查看更多作品" in body_text
+        total_match = re.search(r"作品\s*(\d+)\s*推荐", body_text)
+        total_count = int(total_match.group(1)) if total_match else None
+
+        if login_limited and has_more:
+            total_text = f"作者主页共有 {total_count} 个作品，" if total_count is not None else ""
+            self._set_error(
+                f"浏览器登录认证已失效；{total_text}当前只能访问 {len(aweme_list)} 个公开作品。"
+                "请重新执行浏览器登录导入后重试。",
+                kind="auth",
+            )
+            return None
+
+        if has_more:
+            self._set_error(
+                f"浏览器只获取到 {len(aweme_list)} 个作品，页面仍有更多内容但未能继续加载，请稍后重试。",
+                kind="api",
+            )
+            return None
+
+        self._clear_error()
+        return {
+            "status_code": 0,
+            "min_cursor": captured_pages[0].get("min_cursor", 0),
+            "max_cursor": last_page.get("max_cursor", 0),
+            "has_more": 0,
+            "aweme_list": aweme_list,
+        }
+
+    @staticmethod
+    def _detect_edge_major_version() -> int:
+        application_dir = DEFAULT_EDGE_PATH.parent
+        try:
+            versions = [
+                tuple(int(part) for part in path.name.split("."))
+                for path in application_dir.iterdir()
+                if path.is_dir() and EDGE_VERSION_PATTERN.match(path.name)
+            ]
+        except OSError:
+            versions = []
+        if not versions:
+            return 136
+        return max(versions)[0]
+
+    @staticmethod
+    def _build_edge_user_agent(major_version: int) -> str:
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major_version}.0.0.0 Safari/537.36 "
+            f"Edg/{major_version}.0.0.0"
         )
 
     def get_aweme_detail(self, aweme_id: str, page_url: str | None = None) -> dict | None:

@@ -122,6 +122,38 @@ class BrowserAuthServiceTest(unittest.TestCase):
         self.assertEqual(result.cookie_text, "sessionid=new; ttwid=new")
         self.assertEqual(result.source, "provided authentication text")
 
+    def test_login_with_browser_forces_interactive_sign_in(self):
+        class StubBrowserAuthService(BrowserAuthService):
+            def __init__(self):
+                super().__init__(
+                    browser_candidates=(
+                        BrowserCandidate("Edge", Path(r"C:\stub\msedge.exe"), Path(r"C:\stub\User Data")),
+                    )
+                )
+                self.interactive_args = None
+
+            def resolve_browser(self):
+                return self.browser_candidates[0]
+
+            def _import_from_interactive_browser(self, **kwargs):
+                self.interactive_args = kwargs
+                browser = kwargs["browser"]
+                return self._result_from_cookie_text(
+                    browser,
+                    "sessionid=interactive; ttwid=interactive",
+                    source="interactive Edge profile",
+                )
+
+        service = StubBrowserAuthService()
+        result = service.login_with_browser(timeout_seconds=60, poll_interval=0.5)
+
+        self.assertEqual(result.source, "interactive Edge profile")
+        self.assertEqual(
+            service.interactive_args["target_url"],
+            "https://www.douyin.com/user/self?from_tab_name=main",
+        )
+        self.assertEqual(service.interactive_args["timeout_seconds"], 60)
+
 
 if __name__ == "__main__":
     unittest.main()

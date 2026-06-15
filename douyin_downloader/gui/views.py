@@ -34,6 +34,7 @@ class MainWindowView:
         self.start_button = None
         self.stop_button = None
         self.import_browser_button = None
+        self.login_browser_button = None
 
         self._build()
 
@@ -260,8 +261,10 @@ class MainWindowView:
 
         toolbar = tk.Frame(panel, bg="#ffffff")
         toolbar.pack(fill=tk.X, pady=(0, 10))
-        self.import_browser_button = ttk.Button(toolbar, text="浏览器登录导入")
+        self.import_browser_button = ttk.Button(toolbar, text="自动导入认证")
         self.import_browser_button.pack(side=tk.LEFT)
+        self.login_browser_button = ttk.Button(toolbar, text="打开浏览器登录")
+        self.login_browser_button.pack(side=tk.LEFT, padx=(8, 0))
         self.import_curl_button = ttk.Button(toolbar, text="从文件导入")
         self.import_curl_button.pack(side=tk.LEFT, padx=(8, 0))
         self.clear_curl_button = ttk.Button(toolbar, text="清空输入")
@@ -285,7 +288,7 @@ class MainWindowView:
         hint.pack(fill=tk.X, pady=(12, 0))
         tk.Label(
             hint,
-            text="推荐输入方式：1. 直接点“浏览器登录导入”，程序会优先读取你本机 Edge/Chrome 已登录资料；只有读不到时才会退回手动登录窗口。2. 粘贴完整 cURL。3. 只粘贴 Cookie 字符串。",
+            text="推荐：首次使用或认证过期时点“打开浏览器登录”，在专用 Edge 窗口完成登录后程序会自动保存认证。已有有效登录资料时可点“自动导入认证”。也可以从文件导入完整 cURL。",
             bg="#f8fafc",
             fg="#475569",
             font=("Microsoft YaHei UI", 10),
