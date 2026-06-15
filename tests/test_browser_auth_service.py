@@ -154,6 +154,60 @@ class BrowserAuthServiceTest(unittest.TestCase):
         )
         self.assertEqual(service.interactive_args["timeout_seconds"], 60)
 
+    def test_automatic_import_never_falls_back_to_interactive_browser(self):
+        class StubBrowserAuthService(BrowserAuthService):
+            def __init__(self):
+                super().__init__(
+                    browser_candidates=(
+                        BrowserCandidate("Edge", Path(r"C:\stub\msedge.exe"), Path(r"C:\stub\User Data")),
+                    )
+                )
+                self.interactive_called = False
+
+            def resolve_browser(self):
+                return self.browser_candidates[0]
+
+            def _import_from_managed_profile(self, browser, *, target_url, log_callback=None):
+                return None
+
+            def _import_from_cached_cookie_store(self, browser, log_callback=None):
+                return None
+
+            def _import_from_installed_browser(self, browser, log_callback=None):
+                return None
+
+            def _import_from_interactive_browser(self, **kwargs):
+                self.interactive_called = True
+                raise AssertionError("automatic import must not open an interactive browser")
+
+        service = StubBrowserAuthService()
+
+        with self.assertRaisesRegex(RuntimeError, "打开浏览器登录"):
+            service.import_cookie_text()
+
+        self.assertFalse(service.interactive_called)
+
+    def test_login_page_validation_does_not_open_another_page(self):
+        class StubLocator:
+            def inner_text(self, timeout):
+                return "张三 抖音号：douyin123 编辑资料"
+
+        class StubPage:
+            def is_closed(self):
+                return False
+
+            def title(self):
+                return "张三的主页"
+
+            def locator(self, selector):
+                self.selector = selector
+                return StubLocator()
+
+        page = StubPage()
+
+        self.assertTrue(BrowserAuthService._validate_login_on_page(page))
+        self.assertEqual(page.selector, "body")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -179,12 +179,9 @@ class BrowserAuthService:
         if cached_result:
             return cached_result
 
-        return self._import_from_interactive_browser(
-            browser=browser,
-            target_url=target_url,
-            timeout_seconds=timeout_seconds,
-            poll_interval=poll_interval,
-            log_callback=log_callback,
+        raise RuntimeError(
+            "未找到有效的抖音登录认证。请点击“打开浏览器登录”，"
+            "在弹出的 Edge 窗口中完成登录后再重试。"
         )
 
     def login_with_browser(
@@ -360,7 +357,7 @@ class BrowserAuthService:
                         and now >= next_login_check
                     ):
                         next_login_check = now + 2.0
-                        login_confirmed = self._validate_login_in_context(context)
+                        login_confirmed = self._validate_login_on_page(page)
                         if login_confirmed:
                             break
                     time.sleep(poll_interval)
@@ -383,25 +380,16 @@ class BrowserAuthService:
         )
 
     @staticmethod
-    def _validate_login_in_context(context) -> bool:
-        check_page = context.new_page()
+    def _validate_login_on_page(page) -> bool:
         try:
-            check_page.goto(
-                "https://www.douyin.com/user/self?from_tab_name=main",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-            check_page.wait_for_timeout(1200)
-            if "验证码中间页" in check_page.title():
+            if page.is_closed() or "验证码中间页" in page.title():
                 return False
-            body_text = check_page.locator("body").inner_text(timeout=3000)
+            body_text = page.locator("body").inner_text(timeout=3000)
             if "未登录" in body_text or "登录后即可观看喜欢、收藏的视频" in body_text:
                 return False
             return "抖音号：" in body_text or "编辑资料" in body_text
         except PlaywrightError:
             return False
-        finally:
-            check_page.close()
 
     def _read_profile_cookie_text(self, user_data_dir: Path, profile_dir: Path) -> str:
         cookie_db_path = profile_dir / "Network/Cookies"
