@@ -139,7 +139,7 @@ class MainWindowController:
                 result = self.browser_auth_service.import_cookie_text(log_callback=self.log)
             self.root.after(0, lambda: self._finish_browser_import(result))
         except Exception as exc:
-            self.root.after(0, lambda: self._handle_browser_import_error(exc))
+            self.root.after(0, lambda exc=exc: self._handle_browser_import_error(exc))
         finally:
             self.root.after(0, lambda: self._set_browser_auth_buttons(tk.NORMAL))
 
